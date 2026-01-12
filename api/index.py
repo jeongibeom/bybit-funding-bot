@@ -225,10 +225,15 @@ def handle_message(message):
 # ============ Routes ============
 
 @app.route("/", methods=["GET"])
+@app.route("/api", methods=["GET"])
+@app.route("/api/", methods=["GET"])
 def index():
     return "Bybit Funding Bot is running!"
 
 
+@app.route("/", methods=["POST"])
+@app.route("/api", methods=["POST"])
+@app.route("/api/", methods=["POST"])
 @app.route("/api/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
@@ -243,7 +248,3 @@ def webhook():
         print(f"Error: {e}")
 
     return jsonify({"ok": True})
-
-
-# For Vercel
-app = app
