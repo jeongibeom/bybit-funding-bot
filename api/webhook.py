@@ -6,7 +6,6 @@ import json
 import hmac
 import hashlib
 import time
-from http.server import BaseHTTPRequestHandler
 import urllib.request
 import urllib.parse
 
@@ -14,7 +13,7 @@ import urllib.parse
 # ============ Bybit API ============
 
 def bybit_request(endpoint: str, params: dict = None) -> dict:
-    """Bybit API 요청"""
+    """Bybit API 요청 (공개 API)"""
     base_url = "https://api.bybit.com"
     url = f"{base_url}{endpoint}"
 
@@ -23,6 +22,7 @@ def bybit_request(endpoint: str, params: dict = None) -> dict:
 
     req = urllib.request.Request(url)
     req.add_header("Content-Type", "application/json")
+    req.add_header("User-Agent", "Mozilla/5.0")
 
     with urllib.request.urlopen(req, timeout=10) as response:
         data = json.loads(response.read().decode())
@@ -52,17 +52,16 @@ def get_funding_rates(limit: int = 50) -> list:
     return funding_list[:limit]
 
 
-def get_portfolio() -> dict:
-    """포트폴리오 조회 (서명 필요)"""
+def bybit_signed_request(endpoint: str, params: dict) -> dict:
+    """Bybit API 서명 요청 (비공개 API)"""
     api_key = os.environ.get("BYBIT_API_KEY", "")
     api_secret = os.environ.get("BYBIT_API_SECRET", "")
 
     if not api_key or not api_secret:
-        return {"error": "API 키가 설정되지 않았습니다"}
+        raise Exception("API 키가 설정되지 않았습니다")
 
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
-    params = {"accountType": "UNIFIED"}
     param_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
 
     sign_str = f"{timestamp}{api_key}{recv_window}{param_str}"
@@ -72,48 +71,30 @@ def get_portfolio() -> dict:
         hashlib.sha256
     ).hexdigest()
 
-    url = f"https://api.bybit.com/v5/account/wallet-balance?{param_str}"
+    url = f"https://api.bybit.com{endpoint}?{param_str}"
     req = urllib.request.Request(url)
     req.add_header("X-BAPI-API-KEY", api_key)
     req.add_header("X-BAPI-SIGN", signature)
     req.add_header("X-BAPI-TIMESTAMP", timestamp)
     req.add_header("X-BAPI-RECV-WINDOW", recv_window)
+    req.add_header("User-Agent", "Mozilla/5.0")
 
     with urllib.request.urlopen(req, timeout=10) as response:
         data = json.loads(response.read().decode())
+        if data.get("retCode") != 0:
+            raise Exception(data.get("retMsg"))
         return data.get("result", {})
+
+
+def get_portfolio() -> dict:
+    """포트폴리오 조회"""
+    return bybit_signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
 
 
 def get_positions() -> list:
     """포지션 조회"""
-    api_key = os.environ.get("BYBIT_API_KEY", "")
-    api_secret = os.environ.get("BYBIT_API_SECRET", "")
-
-    if not api_key or not api_secret:
-        return []
-
-    timestamp = str(int(time.time() * 1000))
-    recv_window = "5000"
-    params = {"category": "linear"}
-    param_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-
-    sign_str = f"{timestamp}{api_key}{recv_window}{param_str}"
-    signature = hmac.new(
-        api_secret.encode('utf-8'),
-        sign_str.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-
-    url = f"https://api.bybit.com/v5/position/list?{param_str}"
-    req = urllib.request.Request(url)
-    req.add_header("X-BAPI-API-KEY", api_key)
-    req.add_header("X-BAPI-SIGN", signature)
-    req.add_header("X-BAPI-TIMESTAMP", timestamp)
-    req.add_header("X-BAPI-RECV-WINDOW", recv_window)
-
-    with urllib.request.urlopen(req, timeout=10) as response:
-        data = json.loads(response.read().decode())
-        return data.get("result", {}).get("list", [])
+    result = bybit_signed_request("/v5/position/list", {"category": "linear"})
+    return result.get("list", [])
 
 
 # ============ Telegram ============
@@ -135,7 +116,8 @@ def send_telegram(chat_id: int, text: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
-    except:
+    except Exception as e:
+        print(f"Telegram error: {e}")
         return False
 
 
@@ -213,10 +195,6 @@ def cmd_portfolio(chat_id: int):
         wallet_data = get_portfolio()
         positions = get_positions()
 
-        if "error" in wallet_data:
-            send_telegram(chat_id, wallet_data["error"])
-            return
-
         lines = ["<b>📊 포트폴리오</b>\n"]
 
         if wallet_data.get("list"):
@@ -264,7 +242,6 @@ def handle_message(message: dict):
     command = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
 
-    # @봇이름 제거
     if "@" in command:
         command = command.split("@")[0]
 
@@ -282,26 +259,21 @@ def handle_message(message: dict):
 
 # ============ Vercel Handler ============
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
+def handler(request):
+    """Vercel serverless function handler"""
+    if request.method == "GET":
+        return "Bybit Funding Bot is running!"
 
+    if request.method == "POST":
         try:
-            update = json.loads(body.decode('utf-8'))
+            body = request.body.decode('utf-8')
+            update = json.loads(body)
             message = update.get("message", {})
             if message:
                 handle_message(message)
         except Exception as e:
             print(f"Error: {e}")
 
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(b'{"ok": true}')
+        return {"ok": True}
 
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'Bybit Funding Bot is running!')
+    return "Method not allowed"
