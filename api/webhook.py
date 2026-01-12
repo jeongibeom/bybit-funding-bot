@@ -1,6 +1,4 @@
-"""
-Bybit 펀딩비 텔레그램 봇 - Vercel Serverless Function
-"""
+from flask import Flask, request, jsonify
 import os
 import json
 import hmac
@@ -9,19 +7,18 @@ import time
 import urllib.request
 import urllib.parse
 
+app = Flask(__name__)
+
 
 # ============ Bybit API ============
 
-def bybit_request(endpoint: str, params: dict = None) -> dict:
-    """Bybit API 요청 (공개 API)"""
+def bybit_request(endpoint, params=None):
     base_url = "https://api.bybit.com"
     url = f"{base_url}{endpoint}"
-
     if params:
         url += "?" + urllib.parse.urlencode(params)
 
     req = urllib.request.Request(url)
-    req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "Mozilla/5.0")
 
     with urllib.request.urlopen(req, timeout=10) as response:
@@ -31,8 +28,7 @@ def bybit_request(endpoint: str, params: dict = None) -> dict:
         return data.get("result", {})
 
 
-def get_funding_rates(limit: int = 50) -> list:
-    """펀딩비 상위 목록 조회"""
+def get_funding_rates(limit=50):
     result = bybit_request("/v5/market/tickers", {"category": "linear"})
     tickers = result.get("list", [])
 
@@ -52,13 +48,12 @@ def get_funding_rates(limit: int = 50) -> list:
     return funding_list[:limit]
 
 
-def bybit_signed_request(endpoint: str, params: dict) -> dict:
-    """Bybit API 서명 요청 (비공개 API)"""
+def bybit_signed_request(endpoint, params):
     api_key = os.environ.get("BYBIT_API_KEY", "")
     api_secret = os.environ.get("BYBIT_API_SECRET", "")
 
     if not api_key or not api_secret:
-        raise Exception("API 키가 설정되지 않았습니다")
+        raise Exception("API key not set")
 
     timestamp = str(int(time.time() * 1000))
     recv_window = "5000"
@@ -66,9 +61,7 @@ def bybit_signed_request(endpoint: str, params: dict) -> dict:
 
     sign_str = f"{timestamp}{api_key}{recv_window}{param_str}"
     signature = hmac.new(
-        api_secret.encode('utf-8'),
-        sign_str.encode('utf-8'),
-        hashlib.sha256
+        api_secret.encode(), sign_str.encode(), hashlib.sha256
     ).hexdigest()
 
     url = f"https://api.bybit.com{endpoint}?{param_str}"
@@ -86,21 +79,9 @@ def bybit_signed_request(endpoint: str, params: dict) -> dict:
         return data.get("result", {})
 
 
-def get_portfolio() -> dict:
-    """포트폴리오 조회"""
-    return bybit_signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
-
-
-def get_positions() -> list:
-    """포지션 조회"""
-    result = bybit_signed_request("/v5/position/list", {"category": "linear"})
-    return result.get("list", [])
-
-
 # ============ Telegram ============
 
-def send_telegram(chat_id: int, text: str) -> bool:
-    """텔레그램 메시지 전송"""
+def send_telegram(chat_id, text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
@@ -108,7 +89,7 @@ def send_telegram(chat_id: int, text: str) -> bool:
         "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML"
-    }).encode('utf-8')
+    }).encode()
 
     req = urllib.request.Request(url, data=data)
     req.add_header("Content-Type", "application/json")
@@ -116,31 +97,25 @@ def send_telegram(chat_id: int, text: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.status == 200
-    except Exception as e:
-        print(f"Telegram error: {e}")
+    except:
         return False
 
 
-# ============ Command Handlers ============
+# ============ Commands ============
 
-def cmd_help(chat_id: int):
+def cmd_help(chat_id):
     text = """<b>Bybit 펀딩비 봇</b>
 
-<b>명령어:</b>
-/funding [N] - 펀딩비 상위 N개 (기본 20)
+/funding [N] - 펀딩비 상위 N개
 /f [N] - /funding 단축어
-
-/top [N] - 양수 펀딩비 상위 (롱 과열)
-/bottom [N] - 음수 펀딩비 상위 (숏 과열)
-
-/portfolio - 포트폴리오 조회
-/p - /portfolio 단축어
-
+/top [N] - 양수 펀딩비 (롱 과열)
+/bottom [N] - 음수 펀딩비 (숏 과열)
+/portfolio - 포트폴리오
 /help - 도움말"""
     send_telegram(chat_id, text)
 
 
-def cmd_funding(chat_id: int, args: str):
+def cmd_funding(chat_id, args):
     try:
         limit = int(args) if args.strip().isdigit() else 20
         limit = min(limit, 50)
@@ -163,7 +138,7 @@ def cmd_funding(chat_id: int, args: str):
         send_telegram(chat_id, f"오류: {str(e)}")
 
 
-def cmd_top_bottom(chat_id: int, args: str, positive: bool):
+def cmd_top_bottom(chat_id, args, positive):
     try:
         limit = int(args) if args.strip().isdigit() else 10
         limit = min(limit, 30)
@@ -172,10 +147,10 @@ def cmd_top_bottom(chat_id: int, args: str, positive: bool):
 
         if positive:
             filtered = [f for f in funding_list if f["funding_rate"] > 0]
-            title = f"🟢 <b>양수 펀딩비 상위 {limit}개</b> (롱 과열)"
+            title = f"🟢 <b>양수 펀딩비 상위 {limit}개</b>"
         else:
             filtered = [f for f in funding_list if f["funding_rate"] < 0]
-            title = f"🔴 <b>음수 펀딩비 상위 {limit}개</b> (숏 과열)"
+            title = f"🔴 <b>음수 펀딩비 상위 {limit}개</b>"
 
         filtered.sort(key=lambda x: abs(x["funding_rate"]), reverse=True)
 
@@ -190,38 +165,32 @@ def cmd_top_bottom(chat_id: int, args: str, positive: bool):
         send_telegram(chat_id, f"오류: {str(e)}")
 
 
-def cmd_portfolio(chat_id: int):
+def cmd_portfolio(chat_id):
     try:
-        wallet_data = get_portfolio()
-        positions = get_positions()
+        wallet = bybit_signed_request("/v5/account/wallet-balance", {"accountType": "UNIFIED"})
+        positions = bybit_signed_request("/v5/position/list", {"category": "linear"}).get("list", [])
 
         lines = ["<b>📊 포트폴리오</b>\n"]
 
-        if wallet_data.get("list"):
-            coins = wallet_data["list"][0].get("coin", [])
-            for coin in coins:
+        if wallet.get("list"):
+            for coin in wallet["list"][0].get("coin", []):
                 if coin.get("coin") == "USDT":
                     equity = float(coin.get("equity", 0))
                     available = float(coin.get("availableToWithdraw", 0))
-                    lines.append("<b>💵 USDT</b>")
-                    lines.append(f"총 자산: {equity:.2f}")
-                    lines.append(f"가용: {available:.2f}\n")
+                    lines.append(f"💵 총자산: {equity:.2f} USDT")
+                    lines.append(f"💵 가용: {available:.2f} USDT\n")
                     break
 
         active = [p for p in positions if float(p.get("size", 0)) > 0]
-
         if active:
-            lines.append(f"<b>📈 포지션 ({len(active)}개)</b>")
+            lines.append(f"<b>포지션 ({len(active)}개)</b>")
             for pos in active:
                 symbol = pos.get("symbol", "")
-                side = pos.get("side", "")
+                side = "🟢L" if pos.get("side") == "Buy" else "🔴S"
                 pnl = float(pos.get("unrealisedPnl", 0))
                 leverage = pos.get("leverage", "1")
-
-                direction = "🟢L" if side == "Buy" else "🔴S"
                 pnl_sign = "+" if pnl >= 0 else ""
-
-                lines.append(f"<code>{symbol}</code> {direction} x{leverage} | {pnl_sign}{pnl:.2f}")
+                lines.append(f"<code>{symbol}</code> {side} x{leverage} | {pnl_sign}{pnl:.2f}")
         else:
             lines.append("포지션 없음")
 
@@ -230,8 +199,7 @@ def cmd_portfolio(chat_id: int):
         send_telegram(chat_id, f"오류: {str(e)}")
 
 
-def handle_message(message: dict):
-    """메시지 처리"""
+def handle_message(message):
     chat_id = message.get("chat", {}).get("id")
     text = message.get("text", "")
 
@@ -239,11 +207,8 @@ def handle_message(message: dict):
         return
 
     parts = text.split(maxsplit=1)
-    command = parts[0].lower()
+    command = parts[0].lower().split("@")[0]
     args = parts[1] if len(parts) > 1 else ""
-
-    if "@" in command:
-        command = command.split("@")[0]
 
     if command in ["/start", "/help"]:
         cmd_help(chat_id)
@@ -257,23 +222,28 @@ def handle_message(message: dict):
         cmd_portfolio(chat_id)
 
 
-# ============ Vercel Handler ============
+# ============ Routes ============
 
-def handler(request):
-    """Vercel serverless function handler"""
+@app.route("/", methods=["GET"])
+def index():
+    return "Bybit Funding Bot is running!"
+
+
+@app.route("/api/webhook", methods=["GET", "POST"])
+def webhook():
     if request.method == "GET":
-        return "Bybit Funding Bot is running!"
+        return "Webhook OK"
 
-    if request.method == "POST":
-        try:
-            body = request.body.decode('utf-8')
-            update = json.loads(body)
-            message = update.get("message", {})
-            if message:
-                handle_message(message)
-        except Exception as e:
-            print(f"Error: {e}")
+    try:
+        update = request.get_json()
+        message = update.get("message", {})
+        if message:
+            handle_message(message)
+    except Exception as e:
+        print(f"Error: {e}")
 
-        return {"ok": True}
+    return jsonify({"ok": True})
 
-    return "Method not allowed"
+
+# For Vercel
+app = app

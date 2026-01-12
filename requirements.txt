@@ -1,2 +1,1 @@
-# No external dependencies needed
-# Using built-in urllib for HTTP requests
+flask
